@@ -46,12 +46,12 @@ const int RELAY_PIN = 5;
 
 // time variables
 double baseTime;           // the number of seconds about which the other numbers are calculated
-double stepSize;           // the size of the a step away in fractions of a stop
+double stepInterval;       // the size of the a step away in fractions of a stop
 int stepShift;             // number of steps from the base time we are shifted in STEPS mode (can be negative)
 int burnIntensity;         // number of steps from baseTime we will burn for (only positive)
 double exposureRemaining;  // time in milliseconds on the current exposure.
 double exposureStart;      // time this portion of exposure started. 0 says we weren't in an exposure before.
-int testSteps;             // should be in {3,5,7,9}
+int testStrips;            // should be in {3,5,7,9}
 
 // encoder tracking variables
 int encoderCLKState;
@@ -60,6 +60,7 @@ int encoderPreviousCLKState;
 // the display object
 TM1637Display display(DISPLAY_CLK_PIN, DISPLAY_DIO_PIN);
 int displayBrightness;
+unsigned long lastChangedModeTime;  // when the mode was last switched.
 
 void setup() {
 
@@ -90,6 +91,7 @@ void setup() {
 
   // we always start in seconds mode
   menuMode = SECONDS;
+  lastChangedModeTime = millis();
   lampState = OFF;
 
   displayBrightness = 2;
@@ -98,16 +100,23 @@ void setup() {
 
   baseTime = 10;
   stepShift = 0;
+  stepInterval = 0.1;
   burnIntensity = 1;
-  testSteps = 5;
+  testStrips = 5;
   exposureStart = -1;  // we are not counting
   exposureRemaining = 0;
+
+  Serial.println("Setup Complete");
 }
 
 
 
 // the loop routine runs over and over again forever:
 void loop() {
+
+  display.setBrightness(displayBrightness);
+
+  updateDisplay();
 
   /*
   delay(1000);
@@ -122,12 +131,212 @@ void loop() {
 }
 
 
+void updateDisplay() {
+
+  if (lampState == OFF) {
+
+    // the lamp is off so ew
+    // just call the appropriate function for the mode
+    switch (menuMode) {
+
+      case SECONDS:
+        updateDisplaySecondsMode();
+        break;
+
+      case STEPS:
+        updateDisplayStepsMode();
+        break;
+
+      case BURN:
+        updateDisplayBurnMode();
+        break;
+
+      case TEST:
+        updateDisplayTestMode();
+        break;
+
+      case INTERVAL:
+        updateDisplayIntervalMode();
+        break;
+
+      case FADE:
+        updateDisplayFadeMode();
+        break;
+
+      default:
+        if (millis() - lastChangedModeTime < 1000) {
+          display.showNumberDec(menuMode, false);
+        } else {
+          display.showNumberDec(2772, false);
+        }
+        break;
+    }
+
+  } else {
+
+    // the lamp is on or paused so we display that
+    switch (lampState) {
+
+      case EXPOSE:
+        updateDisplayExpose();
+        break;
+
+      case FOCUS:
+        updateDisplayFocus();
+        break;
+
+      case PAUSE:
+        updateDisplayPause();
+        break;
+    }
+  }
+}
+
+void updateDisplayExpose() {
+  // update the display
+  if (millis() - lastChangedModeTime < 1000) {
+    // the title
+    const uint8_t SEG_DONE[] = {
+      SEG_G,  // -
+      SEG_G,  // -
+      SEG_G,  // -
+      SEG_G   // -
+
+    };
+    display.setSegments(SEG_DONE);
+  } else {
+    display.showNumberDec(exposureRemaining, false);
+  }
+}
+
+void updateDisplayFocus() {
+  const uint8_t SEG_DONE[] = {
+    SEG_A | SEG_F | SEG_G | SEG_E,                  // F
+    SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,  // O
+    SEG_A | SEG_F | SEG_E | SEG_D,                  // C
+    SEG_F | SEG_E | SEG_D | SEG_C | SEG_B           // U
+
+  };
+  display.setSegments(SEG_DONE);
+}
+
+void updateDisplayPause() {
+  const uint8_t SEG_DONE[] = {
+    SEG_A | SEG_F | SEG_G | SEG_B | SEG_E,          // P
+    SEG_E | SEG_F | SEG_A | SEG_B | SEG_C | SEG_G,  // A
+    SEG_F | SEG_E | SEG_D | SEG_C | SEG_B,          // U
+    SEG_A | SEG_F | SEG_G | SEG_C | SEG_D           // S
+
+  };
+  display.setSegments(SEG_DONE);
+}
+
+void updateDisplaySecondsMode() {
+  // update the display
+  if (millis() - lastChangedModeTime < 2000) {
+    // the title
+    const uint8_t SEG_DONE[] = {
+      SEG_A | SEG_F | SEG_G | SEG_C | SEG_D,  // S
+      SEG_A | SEG_D | SEG_E | SEG_F | SEG_G,  // E
+      SEG_A | SEG_F | SEG_E | SEG_D,          // C
+      SEG_A | SEG_F | SEG_G | SEG_C | SEG_D   // S
+
+    };
+    display.setSegments(SEG_DONE);
+  } else {
+    display.showNumberDec(baseTime, false);
+  }
+}
+
+void updateDisplayStepsMode() {
+  // update the display
+  if (millis() - lastChangedModeTime < 2000) {
+    // the title
+    const uint8_t SEG_DONE[] = {
+      SEG_A | SEG_F | SEG_G | SEG_C | SEG_D,  // S
+      SEG_F | SEG_G | SEG_E | SEG_D,          // t
+      SEG_A | SEG_D | SEG_E | SEG_F | SEG_G,  // E
+      SEG_A | SEG_F | SEG_G | SEG_B | SEG_E   // P
+    };
+    display.setSegments(SEG_DONE);
+  } else {
+    display.showNumberDec(stepShift, false);
+  }
+}
+
+void updateDisplayBurnMode() {
+  // update the display
+  if (millis() - lastChangedModeTime < 2000) {
+    // the title
+    const uint8_t SEG_DONE[] = {
+      SEG_F | SEG_E | SEG_D | SEG_C | SEG_G,  // b
+      SEG_E | SEG_D | SEG_C,                  // u
+      SEG_E | SEG_G,                          // r
+      SEG_E | SEG_G | SEG_C                   // n
+    };
+    display.setSegments(SEG_DONE);
+  } else {
+    display.showNumberDec(burnIntensity, false);
+  }
+}
+
+void updateDisplayTestMode() {
+  // update the display
+  if (millis() - lastChangedModeTime < 2000) {
+    // the title
+    const uint8_t SEG_DONE[] = {
+      SEG_F | SEG_G | SEG_E | SEG_D,          // t
+      SEG_A | SEG_D | SEG_E | SEG_F | SEG_G,  // E
+      SEG_A | SEG_F | SEG_G | SEG_C | SEG_D,  // S
+      SEG_F | SEG_G | SEG_E | SEG_D           // t
+    };
+    display.setSegments(SEG_DONE);
+  } else {
+    display.showNumberDec(testStrips, false);
+  }
+}
+
+void updateDisplayIntervalMode() {
+  // update the display
+  if (millis() - lastChangedModeTime < 2000) {
+    // the title
+    const uint8_t SEG_DONE[] = {
+      SEG_F | SEG_E,                  // I
+      SEG_E | SEG_G | SEG_C,          // n
+      SEG_F | SEG_G | SEG_E | SEG_D,  // t
+      SEG_G                           // -
+    };
+    display.setSegments(SEG_DONE);
+  } else {
+    display.showNumberDec(stepInterval, false);
+  }
+}
+
+void updateDisplayFadeMode() {
+  // update the display
+  if (millis() - lastChangedModeTime < 2000) {
+    // the title
+    const uint8_t SEG_DONE[] = {
+      SEG_A | SEG_F | SEG_G | SEG_E,                  // F
+      SEG_E | SEG_F | SEG_A | SEG_B | SEG_C | SEG_G,  // A
+      SEG_B | SEG_C | SEG_D | SEG_E | SEG_G,          // d
+      SEG_A | SEG_D | SEG_E | SEG_F | SEG_G           // E
+    };
+    display.setSegments(SEG_DONE);
+  } else {
+    display.showNumberDec(displayBrightness, false);
+  }
+}
+
 void encoderMove() {
 
-  static unsigned long last_interrupt_time = 0;
+  // Do nothing if the lamp is busy
+  if(lampState != OFF) return;
+
+  static unsigned long move_last_interrupt_time = 0;
   unsigned long interrupt_time = millis();
   // If interrupts come faster than 50ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 20) {
+  if (interrupt_time - move_last_interrupt_time > 20) {
 
     bool increase = digitalRead(ENCODER_DT_PIN);
 
@@ -171,46 +380,53 @@ void encoderMove() {
 
       case TEST:
         if (increase) {
-          testSteps = testSteps + 2;
-          if (testSteps > 9) testSteps = 9;
+          testStrips = testStrips + 2;
+          if (testStrips > 9) testStrips = 9;
         } else {
-          testSteps = testSteps - 2;
-          if (testSteps < 3) testSteps = 3;
+          testStrips = testStrips - 2;
+          if (testStrips < 3) testStrips = 3;
         }
-        Serial.print("testSteps: ");
-        Serial.println(testSteps);
+        Serial.print("testStrips: ");
+        Serial.println(testStrips);
         break;
-        
+
+      case INTERVAL:
+        if (increase) {
+          stepInterval = stepInterval + 0.1;
+          if (stepInterval > 0.5) stepInterval = 0.5;
+        } else {
+          stepInterval = stepInterval - 0.1;
+          if (stepInterval < 0) stepInterval = 0;
+        }
+        Serial.print("stepInterval: ");
+        Serial.println(stepInterval);
+        break;
+
+      case FADE:
+        if (increase) {
+          displayBrightness = displayBrightness + 1;
+          if (displayBrightness > 7) displayBrightness = 7;
+        } else {
+          displayBrightness = displayBrightness - 1;
+          if (displayBrightness < 0) displayBrightness = 0;
+        }
+        Serial.print("displayBrightness: ");
+        Serial.println(displayBrightness);
+        break;
+
       default:
         Serial.println("unrecognised menu mode");
         break;
     }
   }
-  last_interrupt_time = interrupt_time;
-
-  /*
-  encoderCLKState = digitalRead(ENCODER_CLK_PIN);
-
-  // If the previous and the current state of the inputCLK are different then a pulse has occured
-  if (encoderCLKState != encoderPreviousCLKState) {
-
-    if (digitalRead(ENCODER_DT_PIN)) {
-      Serial.println("ENCODER moved UP");
-    } else {
-      Serial.println("ENCODER moved DOWN");
-    }
-  }
-
-  // Update previousStateCLK with the current state
-  encoderPreviousCLKState = encoderCLKState;
-*/
+  move_last_interrupt_time = interrupt_time;
 }
 
 void exposeButtonPress() {
-  static unsigned long last_interrupt_time = 0;
+  static unsigned long expose_last_interrupt_time = 0;
   unsigned long interrupt_time = millis();
   // If interrupts come faster than 200ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 200) {
+  if (interrupt_time - expose_last_interrupt_time > 200) {
 
     Serial.println("EXPOSE button pressed");
 
@@ -218,23 +434,31 @@ void exposeButtonPress() {
     switch (lampState) {
       case OFF:
         lampState = EXPOSE;
+        tone(BUZZER_PIN, 600, 350);
         break;
       case PAUSE:
         lampState = EXPOSE;
+        tone(BUZZER_PIN, 600, 350);
+        break;
+      case EXPOSE:
+        lampState = PAUSE;
+        tone(BUZZER_PIN, 500, 350);
         break;
       default:
         lampState = OFF;
         break;
     }
+
+    lastChangedModeTime = millis(); // we are back to modes
   }
-  last_interrupt_time = interrupt_time;
+  expose_last_interrupt_time = interrupt_time;
 }
 
 void focusButtonPress() {
-  static unsigned long last_interrupt_time = 0;
+  static unsigned long focus_last_interrupt_time = 0;
   unsigned long interrupt_time = millis();
   // If interrupts come faster than 200ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 200) {
+  if (interrupt_time - focus_last_interrupt_time > 200) {
 
     Serial.println("FOCUS button pressed");
 
@@ -242,20 +466,27 @@ void focusButtonPress() {
     switch (lampState) {
       case OFF:
         lampState = FOCUS;
+        tone(BUZZER_PIN, 200, 100);
         break;
       default:
         lampState = OFF;
         break;
     }
+
+    lastChangedModeTime = millis(); // we are back to modes
   }
-  last_interrupt_time = interrupt_time;
+  focus_last_interrupt_time = interrupt_time;
 }
 
 void encoderButtonPress() {
-  static unsigned long last_interrupt_time = 0;
+
+  // Do nothing if the lamp is busy
+  if(lampState != OFF) return;
+
+  static unsigned long encoder_last_interrupt_time = 0;
   unsigned long interrupt_time = millis();
   // If interrupts come faster than 200ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 200) {
+  if (interrupt_time - encoder_last_interrupt_time > 200) {
 
     Serial.println("ENCODER button pressed");
 
@@ -276,32 +507,17 @@ void encoderButtonPress() {
       case INTERVAL:
         menuMode = FADE;
         break;
+      case FADE:
+        menuMode = SECONDS;
+        break;
       default:
-        menuMode = STEPS;  // should never happen
+        menuMode = SECONDS;  // should never happen
         break;
     }
     Serial.print("menuMode: ");
     Serial.println(menuMode);
+    lastChangedModeTime = millis();
   }
-  last_interrupt_time = interrupt_time;
+  encoder_last_interrupt_time = interrupt_time;
 }
 
-
-/*
-
-handling the bounce issue
-
-void my_interrupt_handler()
-{
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
-  // If interrupts come faster than 200ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 200) 
-  {
-    ... do your thing
-  }
-  last_interrupt_time = interrupt_time;
-}
-
-
-*/
