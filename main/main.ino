@@ -13,7 +13,6 @@
   TM1637 display library https://github.com/avishorp/TM1637
 
 
-
 */
 #include <TM1637Display.h>
 
@@ -49,13 +48,14 @@ const int stepIntervalNames[] = { 15, 13, 12, 23, 10 };            // will be di
 
 
 // time variables
-double baseTime;           // the number of seconds about which the other numbers are calculated
-int stepIntervalIndex;     // which of the step sizes is chosen
-int stepShift;             // number of steps from the base time we are shifted in STEPS mode (can be negative)
-int burnIntensity;         // number of steps from baseTime we will burn for (only positive)
-double exposureRemaining;  // time in milliseconds on the current exposure.
-double exposureStart;      // time this portion of exposure started. 0 says we weren't in an exposure before.
-int testStrips;            // should be in {3,5,7,9}
+double baseTime;                      // the number of seconds about which the other numbers are calculated
+int stepIntervalIndex;                // which of the step sizes is chosen
+int stepShift;                        // number of steps from the base time we are shifted in STEPS mode (can be negative)
+int burnIntensity;                    // number of steps from baseTime we will burn for (only positive)
+signed long exposureRemainingMillis;  // time in milliseconds on the current exposure - signed so we can tell when it goes negative.
+unsigned long exposureStartTime;      // time this portion of exposure started. 0 says we weren't in an exposure before.
+int testStrips;                       // should be in {3,5,7,9}
+int currentTestStrip;                 // the strip we are currently exposing
 
 // encoder tracking variables
 int encoderCLKState;
@@ -67,6 +67,7 @@ int displayBrightness;
 unsigned long lastChangedModeTime;       // when the mode was last switched.
 unsigned long lastMovedEncoderTime;      // When the encoder was last moved.
 unsigned long encoderButtonPressedTime;  // Last time an interupt button press was found
+int lastLampOnBeepSecond;        // last time we beeped because the lamp was on.
 
 void setup() {
 
@@ -109,21 +110,21 @@ void setup() {
   stepIntervalIndex = 2;
   burnIntensity = 1;
   testStrips = 5;
-  exposureStart = -1;  // we are not counting
-  exposureRemaining = 0;
+  currentTestStrip = 0;
+  exposureStartTime = 0;  // we are not counting
+  exposureRemainingMillis = 0;
 
   encoderButtonPressedTime = 0;  // zero means it wasn't pressed
+  lastLampOnBeepSecond = 0;        // zero means we aren't timing.
 
   Serial.println("Setup Complete");
 }
 
-
-
 // the loop routine runs over and over again forever:
 void loop() {
 
+  // first thing we always do is update the display
   display.setBrightness(displayBrightness);
-
   updateDisplay();
 
   // handle long and short presses of encoder button
@@ -145,7 +146,51 @@ void loop() {
     }
   }
 
+  // if the lamp is on we beep ever second
+  if ((lampState == EXPOSE)) {
+    // time remaining in whole seconds
+    int remainingSecs = floor(exposureRemainingMillis / 1000);
+    if(remainingSecs < lastLampOnBeepSecond){
+      tone(BUZZER_PIN, 150, 50);
+    }
+    lastLampOnBeepSecond = remainingSecs;
+  } else {
+    lastLampOnBeepSecond = 0;
+  }
 
+  // actually make and exposure if it is on
+  switch (lampState) {
+
+    case EXPOSE:
+      // remove the time that has passed since the start of this exposure period from the time remaining
+      // it is like we keep starting a new exposure every loop
+      if (exposureRemainingMillis > 0) {
+        digitalWrite(RELAY_PIN, HIGH);
+        exposureRemainingMillis = exposureRemainingMillis - (millis() - exposureStartTime);
+        exposureStartTime = millis();
+      } else {
+        // we have reached the end beautiful friend
+        digitalWrite(RELAY_PIN, LOW);
+        lampState = OFF;
+        exposureRemainingMillis = 0;
+        exposureStartTime = 0;
+        tone(BUZZER_PIN, 500, 350);
+      }
+      break;
+
+    case PAUSE:
+      digitalWrite(RELAY_PIN, LOW);
+      break;
+
+    case FOCUS:
+      // all we do with focus is turn the lamp on.
+      digitalWrite(RELAY_PIN, HIGH);
+      break;
+
+    default:
+      // if all fails turn the lamp off!
+      digitalWrite(RELAY_PIN, LOW);
+  }
 }
 
 
@@ -176,8 +221,26 @@ double getStepsTime() {
   the current number of steps
 */
 double getBurnTime() {
-  double oneStep = baseTime * pow(2, stepIntervalSizes[stepIntervalIndex]);
-  return oneStep * burnIntensity;
+
+  // We need to keep track of the cumulative time the print will have had
+  double cumulativeTime = baseTime;
+  double burnTime = 0;
+  for (int i = 0; i < burnIntensity; i++) {
+
+    // what would the total exposure be if we added a step?
+    double newCumulativeTime = cumulativeTime * pow(2, stepIntervalSizes[stepIntervalIndex]);
+
+    // how much extra is this?
+    double additionalTime = newCumulativeTime - cumulativeTime;
+
+    // add this extra bit to the total time.
+    burnTime = burnTime + additionalTime;
+
+    // increase the cumulative time so when we add the next step
+    // it is the correct size
+    cumulativeTime = newCumulativeTime;
+  }
+  return burnTime;
 }
 
 /**
@@ -187,6 +250,32 @@ double getBurnTime() {
 double getTestStripTime(int strip) {
   // FIXME: a little more complex!
   return 0;
+}
+
+unsigned long getExposureTimeMillis() {
+
+  double exposureSeconds;
+
+  // duration of the exposure depends what mode we are in
+  switch (menuMode) {
+    case (SECONDS):
+      exposureSeconds = baseTime;
+      break;
+    case (STEPS):
+      exposureSeconds = getStepsTime();
+      break;
+    case (BURN):
+      exposureSeconds = getBurnTime();
+      break;
+    case (TEST):
+      exposureSeconds = getTestStripTime(currentTestStrip);
+      break;
+    default:
+      exposureSeconds = 0;
+      break;
+  }
+
+  return exposureSeconds * 1000;
 }
 
 void updateDisplay() {
@@ -272,20 +361,8 @@ void updateDisplayShowSeconds(double secs) {
 }
 
 void updateDisplayExpose() {
-  // update the display
-  if (millis() - lastChangedModeTime < 1000) {
-    // the title
-    const uint8_t SEG_DONE[] = {
-      SEG_G,  // -
-      SEG_G,  // -
-      SEG_G,  // -
-      SEG_G   // -
-
-    };
-    display.setSegments(SEG_DONE);
-  } else {
-    updateDisplayShowSeconds(exposureRemaining);
-  }
+  // Just show remaining time during an exposure
+  updateDisplayShowSeconds(exposureRemainingMillis / 1000);
 }
 
 void updateDisplayFocus() {
@@ -341,7 +418,6 @@ void updateDisplayStepsMode() {
     // make like we moved the encode so the steps are displayed after the title
     lastMovedEncoderTime = millis();
   } else {
-
     if (millis() - lastMovedEncoderTime < 2000) {
       // display the step for two seconds
       display.showNumberDec(stepShift, false);
@@ -363,8 +439,17 @@ void updateDisplayBurnMode() {
       SEG_E | SEG_G | SEG_C                   // n
     };
     display.setSegments(SEG_DONE);
+    // make like we moved the encode so the steps are displayed after the title
+    lastMovedEncoderTime = millis();
   } else {
-    display.showNumberDec(burnIntensity, false);
+
+    if (millis() - lastMovedEncoderTime < 2000) {
+      // display the step for two seconds
+      display.showNumberDec(burnIntensity, false);
+    } else {
+      // then display the calculated time
+      updateDisplayShowSeconds(getBurnTime());
+    }
   }
 }
 
@@ -543,10 +628,16 @@ void exposeButtonPress() {
     // just change the lampState appropriately
     switch (lampState) {
       case OFF:
+        // we are starting an new exposure period so we mark it.
+        exposureStartTime = millis();
+        exposureRemainingMillis = getExposureTimeMillis();
         lampState = EXPOSE;
         tone(BUZZER_PIN, 600, 350);
         break;
       case PAUSE:
+        // were were on a pause but now we start a new phase
+        // no need to set exposureRemaining
+        exposureStartTime = millis();
         lampState = EXPOSE;
         tone(BUZZER_PIN, 600, 350);
         break;
@@ -569,16 +660,24 @@ void focusButtonPress() {
   unsigned long interrupt_time = millis();
   // If interrupts come faster than 200ms, assume it's a bounce and ignore
   if (interrupt_time - focus_last_interrupt_time > 200) {
-
+    tone(BUZZER_PIN, 200, 100);
     Serial.println("FOCUS button pressed");
 
     // just change the lampState appropriately
     switch (lampState) {
       case OFF:
         lampState = FOCUS;
-        tone(BUZZER_PIN, 200, 100);
+        break;
+      case EXPOSE:
+      case PAUSE:
+        // focus button acts as a cancel button during
+        // and exposure
+        exposureStartTime = 0;
+        exposureRemainingMillis = 0;
+        lampState = OFF;
         break;
       default:
+        // shouldn't get here but if we do we go off
         lampState = OFF;
         break;
     }
@@ -608,7 +707,7 @@ void encoderButtonShortPress() {
 
   Serial.println("ENCODER short press");
 
-  // just change the lampState appropriately
+  // just change the mode appropriately
   switch (menuMode) {
     case SECONDS:
       menuMode = STEPS;
@@ -620,10 +719,10 @@ void encoderButtonShortPress() {
       menuMode = TEST;
       break;
     case TEST:
-      menuMode = INTERVAL;
+      menuMode = SECONDS;
       break;
     case INTERVAL:
-      menuMode = FADE;
+      menuMode = STEPS;
       break;
     case FADE:
       menuMode = SECONDS;
@@ -639,10 +738,29 @@ void encoderButtonLongPress() {
 
   tone(BUZZER_PIN, 100, 350);
 
-  if(menuMode == STEPS){
-    baseTime = getStepsTime();
-    menuMode = SECONDS;
-    lastChangedModeTime = millis();
+  // just change the mode appropriately
+  switch (menuMode) {
+    case SECONDS:
+      // long press on seconds allows and interval to be set.
+      menuMode = INTERVAL;
+      break;
+    case STEPS:
+      // long press on steps sets the step time as the new base time.
+      baseTime = getStepsTime();
+      stepShift = 0; // we centre on the new base time too
+      menuMode = SECONDS; // flip to the seconds so you can see what you have done
+      break;
+    case BURN:
+      menuMode = FADE;
+      break;
+    /* we aren't using the long press on TEST yet!
+    case TEST:
+      menuMode = INTERVAL;
+      break;
+    */
+    default:
+      menuMode = SECONDS;  // should never happen
+      break;
   }
-
+  lastChangedModeTime = millis();
 }
