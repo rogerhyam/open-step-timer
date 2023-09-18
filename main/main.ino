@@ -54,8 +54,8 @@ int stepShift;                        // number of steps from the base time we a
 int burnIntensity;                    // number of steps from baseTime we will burn for (only positive)
 signed long exposureRemainingMillis;  // time in milliseconds on the current exposure - signed so we can tell when it goes negative.
 unsigned long exposureStartTime;      // time this portion of exposure started. 0 says we weren't in an exposure before.
-int testStrips;                       // should be in {3,5,7,9}
-int currentTestStrip;                 // the strip we are currently exposing
+int testStripes;                      // should be in {3,5,7,9}
+int currentTestStripe;                // the stripe we are currently exposing
 
 // encoder tracking variables
 int encoderCLKState;
@@ -67,7 +67,7 @@ int displayBrightness;
 unsigned long lastChangedModeTime;       // when the mode was last switched.
 unsigned long lastMovedEncoderTime;      // When the encoder was last moved.
 unsigned long encoderButtonPressedTime;  // Last time an interupt button press was found
-int lastLampOnBeepSecond;        // last time we beeped because the lamp was on.
+int lastLampOnBeepSecond;                // last time we beeped because the lamp was on.
 
 void setup() {
 
@@ -109,13 +109,13 @@ void setup() {
   stepShift = 0;
   stepIntervalIndex = 2;
   burnIntensity = 1;
-  testStrips = 5;
-  currentTestStrip = 0;
+  testStripes = 5;
+  currentTestStripe = 0;
   exposureStartTime = 0;  // we are not counting
   exposureRemainingMillis = 0;
 
   encoderButtonPressedTime = 0;  // zero means it wasn't pressed
-  lastLampOnBeepSecond = 0;        // zero means we aren't timing.
+  lastLampOnBeepSecond = 0;      // zero means we aren't timing.
 
   Serial.println("Setup Complete");
 }
@@ -124,7 +124,6 @@ void setup() {
 void loop() {
 
   // first thing we always do is update the display
-  display.setBrightness(displayBrightness);
   updateDisplay();
 
   // handle long and short presses of encoder button
@@ -150,7 +149,7 @@ void loop() {
   if ((lampState == EXPOSE)) {
     // time remaining in whole seconds
     int remainingSecs = floor(exposureRemainingMillis / 1000);
-    if(remainingSecs < lastLampOnBeepSecond){
+    if (remainingSecs < lastLampOnBeepSecond) {
       tone(BUZZER_PIN, 150, 50);
     }
     lastLampOnBeepSecond = remainingSecs;
@@ -174,7 +173,20 @@ void loop() {
         lampState = OFF;
         exposureRemainingMillis = 0;
         exposureStartTime = 0;
-        tone(BUZZER_PIN, 500, 350);
+
+        // are we in test mode?
+        if (menuMode == TEST) {
+          currentTestStripe++;  // move to the next stripe
+          if (currentTestStripe >= testStripes) {
+            // that was the last one.
+            currentTestStripe = 0;
+            tone(BUZZER_PIN, 250, 700);  // high beep at end of each stripe
+          } else {
+            tone(BUZZER_PIN, 700, 700);  // low beep at end of final stripe
+          }
+        } else {
+          tone(BUZZER_PIN, 500, 350);  // mid beep end of normal exposure
+        }
       }
       break;
 
@@ -198,7 +210,7 @@ void loop() {
 /**
   Return the duration of an exposure in steps mode
 */
-double getStepsTime() {
+double getStepsDuration() {
 
   // do nothing if we aren't shifted
   if (stepShift == 0) return baseTime;
@@ -213,6 +225,10 @@ double getStepsTime() {
     }
   }
 
+  // hard stop on times
+  if (calcTime < 1) calcTime = 1;
+  if (calcTime > 9999) calcTime = 9999;
+
   return calcTime;
 }
 
@@ -220,7 +236,7 @@ double getStepsTime() {
   Return the duration of an exposure to burn
   the current number of steps
 */
-double getBurnTime() {
+double getBurnDuration() {
 
   // We need to keep track of the cumulative time the print will have had
   double cumulativeTime = baseTime;
@@ -240,16 +256,77 @@ double getBurnTime() {
     // it is the correct size
     cumulativeTime = newCumulativeTime;
   }
+
+  // hard stop on times
+  if (burnTime < 1) burnTime = 1;
+  if (burnTime > 9999) burnTime = 9999;
+
   return burnTime;
 }
 
 /**
-  Return the duration of an exposure for a strip
-  in a series of strips
+  Return the duration of an exposure for a stripe
+  in a series of stripes
 */
-double getTestStripTime(int strip) {
-  // FIXME: a little more complex!
-  return 0;
+double getTestStripeDuration() {
+
+  // keep things simple and work out the target exposure for each stripe first
+  double targetExposures[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };  // we know that maximum size.
+
+  int lastStripeStep = (testStripes - 1) / 2;
+  int firstStripeStep = lastStripeStep * -1;
+
+  // this should go something like -3, -2, -1, 0, 1, 2, 3
+  for (int shift = firstStripeStep; shift <= lastStripeStep; shift++) {
+
+    // build a calculated time
+    double calcTime = baseTime;
+    if (shift != 0) {
+      for (int i = 0; i < abs(shift); i++) {
+        if (shift > 0) {
+          calcTime = calcTime * pow(2, stepIntervalSizes[stepIntervalIndex]);
+        } else {
+          calcTime = calcTime * pow(2, stepIntervalSizes[stepIntervalIndex] * -1);
+        }
+      }
+    }
+
+    targetExposures[shift + lastStripeStep] = calcTime;
+  }
+
+  // we have an array with all the exposures the stripes should end up with in it
+  // now work out burn time by removing the exposures of previously burned stripes.
+  double burnTimes[9];
+
+  // first stripe doesn't have pre-existing exposure.
+  burnTimes[0] = targetExposures[0];
+
+  // subsequent stripes have target - the sum of the previous ones
+  for (int i = 1; i < 9; i++) {
+
+    // if we get to an exposure of 0 then we have done them all
+    if (targetExposures[i] == 0) break;
+
+    // add up all the time we have burned to this point
+    double cumulativeTime = 0;
+    for (int j = 0; j < i; j++) {
+      cumulativeTime += burnTimes[j];
+    }
+
+    // take it away from the target exposure for this stripe
+    burnTimes[i] = targetExposures[i] - cumulativeTime;
+  }
+
+
+  // finally return the burn time for just this stripe
+
+  double stripeTime = burnTimes[currentTestStripe];
+
+  // hard stop on times
+  if (stripeTime < 1) stripeTime = 1;
+  if (stripeTime > 9999) stripeTime = 9999;
+
+  return stripeTime;
 }
 
 unsigned long getExposureTimeMillis() {
@@ -262,13 +339,13 @@ unsigned long getExposureTimeMillis() {
       exposureSeconds = baseTime;
       break;
     case (STEPS):
-      exposureSeconds = getStepsTime();
+      exposureSeconds = getStepsDuration();
       break;
     case (BURN):
-      exposureSeconds = getBurnTime();
+      exposureSeconds = getBurnDuration();
       break;
     case (TEST):
-      exposureSeconds = getTestStripTime(currentTestStrip);
+      exposureSeconds = getTestStripeDuration();
       break;
     default:
       exposureSeconds = 0;
@@ -347,22 +424,25 @@ void updateDisplay() {
 */
 void updateDisplayShowSeconds(double secs) {
 
-  int firstDigit = floor(secs / 10);
-  int secondDigit = (int)floor(secs) % 10;
-  int fistDecimal = floor((fmod(secs, 1)) * 10);
-
-  uint8_t secondsSegs[] = {
-    display.encodeDigit(firstDigit),
-    display.encodeDigit(secondDigit),
-    SEG_G,  // -
-    display.encodeDigit(fistDecimal)
-  };
-  display.setSegments(secondsSegs);
+  if (secs < 100) {
+    int firstDigit = floor(secs / 10);
+    int secondDigit = (int)floor(secs) % 10;
+    int fistDecimal = floor((fmod(secs, 1)) * 10);
+    uint8_t secondsSegs[] = {
+      display.encodeDigit(firstDigit),
+      display.encodeDigit(secondDigit),
+      SEG_G,  // -
+      display.encodeDigit(fistDecimal)
+    };
+    display.setSegments(secondsSegs);
+  } else {
+    display.showNumberDec(secs, false);
+  }
 }
 
 void updateDisplayExpose() {
   // Just show remaining time during an exposure
-  updateDisplayShowSeconds(exposureRemainingMillis / 1000);
+  updateDisplayShowSeconds((double)exposureRemainingMillis / (double)1000);
 }
 
 void updateDisplayFocus() {
@@ -423,7 +503,7 @@ void updateDisplayStepsMode() {
       display.showNumberDec(stepShift, false);
     } else {
       // then display the calculated time
-      updateDisplayShowSeconds(getStepsTime());
+      updateDisplayShowSeconds(getStepsDuration());
     }
   }
 }
@@ -448,7 +528,7 @@ void updateDisplayBurnMode() {
       display.showNumberDec(burnIntensity, false);
     } else {
       // then display the calculated time
-      updateDisplayShowSeconds(getBurnTime());
+      updateDisplayShowSeconds(getBurnDuration());
     }
   }
 }
@@ -468,10 +548,10 @@ void updateDisplayTestMode() {
     uint8_t colon = 0b01000000;
 
     uint8_t SEG_TEST[] = {
-      display.encodeDigit(testStrips),
-      SEG_G,                          // -
-      SEG_A | SEG_F | SEG_E | SEG_D,  // C
-      display.encodeDigit(0)          // strip we are on
+      display.encodeDigit(testStripes),
+      SEG_G,                                  // -
+      SEG_A | SEG_F | SEG_E | SEG_D,          // C
+      display.encodeDigit(currentTestStripe)  // stripe we are on
     };
     display.setSegments(SEG_TEST);
   }
@@ -527,7 +607,7 @@ void encoderMove() {
   static unsigned long move_last_interrupt_time = 0;
   unsigned long interrupt_time = millis();
   // If interrupts come faster than 50ms, assume it's a bounce and ignore
-  if (interrupt_time - move_last_interrupt_time > 50) {
+  if (interrupt_time - move_last_interrupt_time > 10) {
 
     // keep track of when it was moved so we can change the
     // display a few seconds later
@@ -540,13 +620,11 @@ void encoderMove() {
       case SECONDS:
         if (increase) {
           baseTime = baseTime + 1;
-          if (baseTime > 99) baseTime = 99;
+          if (baseTime > 9999) baseTime = 9999;
         } else {
           baseTime = baseTime - 1;
           if (baseTime < 1) baseTime = 1;
         }
-        Serial.print("baseTime: ");
-        Serial.println(baseTime);
         break;
 
       case STEPS:
@@ -557,8 +635,6 @@ void encoderMove() {
           stepShift = stepShift - 1;
           if (stepShift < -9) stepShift = -9;
         }
-        Serial.print("stepShift: ");
-        Serial.println(stepShift);
         break;
 
       case BURN:
@@ -569,20 +645,19 @@ void encoderMove() {
           burnIntensity = burnIntensity - 1;
           if (burnIntensity < 1) burnIntensity = 1;
         }
-        Serial.print("burnIntensity: ");
-        Serial.println(burnIntensity);
         break;
 
       case TEST:
-        if (increase) {
-          testStrips = testStrips + 2;
-          if (testStrips > 9) testStrips = 9;
-        } else {
-          testStrips = testStrips - 2;
-          if (testStrips < 3) testStrips = 3;
+        // you can only change the testStripes when not in the middle of a test
+        if (currentTestStripe == 0) {
+          if (increase) {
+            testStripes = testStripes + 2;
+            if (testStripes > 9) testStripes = 9;
+          } else {
+            testStripes = testStripes - 2;
+            if (testStripes < 3) testStripes = 3;
+          }
         }
-        Serial.print("testStrips: ");
-        Serial.println(testStrips);
         break;
 
       case INTERVAL:
@@ -593,8 +668,6 @@ void encoderMove() {
           stepIntervalIndex = stepIntervalIndex - 1;
           if (stepIntervalIndex < 0) stepIntervalIndex = 0;
         }
-        Serial.print("stepIntervalIndex: ");
-        Serial.println(stepIntervalIndex);
         break;
 
       case FADE:
@@ -605,8 +678,6 @@ void encoderMove() {
           displayBrightness = displayBrightness - 1;
           if (displayBrightness < 0) displayBrightness = 0;
         }
-        Serial.print("displayBrightness: ");
-        Serial.println(displayBrightness);
         break;
 
       default:
@@ -623,8 +694,6 @@ void exposeButtonPress() {
   // If interrupts come faster than 200ms, assume it's a bounce and ignore
   if (interrupt_time - expose_last_interrupt_time > 200) {
 
-    Serial.println("EXPOSE button pressed");
-
     // just change the lampState appropriately
     switch (lampState) {
       case OFF:
@@ -632,14 +701,12 @@ void exposeButtonPress() {
         exposureStartTime = millis();
         exposureRemainingMillis = getExposureTimeMillis();
         lampState = EXPOSE;
-        tone(BUZZER_PIN, 600, 350);
         break;
       case PAUSE:
         // were were on a pause but now we start a new phase
         // no need to set exposureRemaining
         exposureStartTime = millis();
         lampState = EXPOSE;
-        tone(BUZZER_PIN, 600, 350);
         break;
       case EXPOSE:
         lampState = PAUSE;
@@ -661,7 +728,6 @@ void focusButtonPress() {
   // If interrupts come faster than 200ms, assume it's a bounce and ignore
   if (interrupt_time - focus_last_interrupt_time > 200) {
     tone(BUZZER_PIN, 200, 100);
-    Serial.println("FOCUS button pressed");
 
     // just change the lampState appropriately
     switch (lampState) {
@@ -674,6 +740,7 @@ void focusButtonPress() {
         // and exposure
         exposureStartTime = 0;
         exposureRemainingMillis = 0;
+        currentTestStripe = 0;
         lampState = OFF;
         break;
       default:
@@ -696,17 +763,12 @@ void encoderButtonPress() {
   unsigned long interrupt_time = millis();
   // If interrupts come faster than 200ms, assume it's a bounce and ignore
   if (interrupt_time - encoder_last_interrupt_time > 200) {
-    Serial.println("ENCODER button down");
     encoderButtonPressedTime = millis();
-    Serial.println(encoderButtonPressedTime);
   }
   encoder_last_interrupt_time = interrupt_time;
 }
 
 void encoderButtonShortPress() {
-
-  Serial.println("ENCODER short press");
-
   // just change the mode appropriately
   switch (menuMode) {
     case SECONDS:
@@ -725,6 +787,7 @@ void encoderButtonShortPress() {
       menuMode = STEPS;
       break;
     case FADE:
+      display.setBrightness(displayBrightness);
       menuMode = SECONDS;
       break;
     default:
@@ -746,9 +809,9 @@ void encoderButtonLongPress() {
       break;
     case STEPS:
       // long press on steps sets the step time as the new base time.
-      baseTime = getStepsTime();
-      stepShift = 0; // we centre on the new base time too
-      menuMode = SECONDS; // flip to the seconds so you can see what you have done
+      baseTime = getStepsDuration();
+      stepShift = 0;       // we centre on the new base time too
+      menuMode = SECONDS;  // flip to the seconds so you can see what you have done
       break;
     case BURN:
       menuMode = FADE;

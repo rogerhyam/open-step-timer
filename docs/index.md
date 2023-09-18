@@ -1,13 +1,23 @@
 
 
 
-## Concepts
+## Terminology
 
 ### F-Stop
 
 ### F-Step
 
 ### Base Time
+
+### Strips/Stripes
+
+People use the words strip and stripe somewhat ambiguously. Generally this doesn't matter but can get very confusing when documenting an enlarger timer. For clarity this is how they will be used here:
+
+- __Test Print:__ Any print made with the intension of determining the correct exposure or grade for a "real" print. This is used whether a "strip" or a whole sheet of paper is used and whether a single exposure is made on the paper or multiple exposures.
+- __Stripe:__ A single exposure area or a test print. Test prints are typically made by exposing a series of stripes at different exposures across the paper.
+- __Test Strip:__ A synonym of __Test Print__ for when a narrow peice of paper is used to make the print. Test strips are good (save paper) but the word strip can be confusingly used to mean both the Test Print and the exposure Stripe on that print and so it is avoided here.
+
+There is no right or wrong on these things we just need stable definitions. 
 
 ## Modes
 
